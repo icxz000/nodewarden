@@ -8,11 +8,23 @@ import {
   validateBackupPayloadContents,
 } from './backup-archive';
 
+// CONTRACT:
+// Restore is intentionally whitelist-based. Old backups may contain retired
+// fields, but only the columns listed here are imported. Keep this file in sync
+// with src/services/backup-archive.ts whenever backup contents change.
+//
+// WHEN CHANGING THIS:
+// - Update BackupTableName, BACKUP_TABLES, reset statements, prepared payloads,
+//   shadow-table count validation, insert column lists, and frontend import
+//   count types together.
+// - Do not import users.api_key, even if an older backup contains it.
 type SqlRow = Record<string, string | number | null>;
 type BackupTableName =
   | 'config'
   | 'users'
+  | 'domain_settings'
   | 'user_revisions'
+  | 'webauthn_credentials'
   | 'folders'
   | 'ciphers'
   | 'attachments';
@@ -20,7 +32,9 @@ type BackupTableName =
 const BACKUP_TABLES: BackupTableName[] = [
   'config',
   'users',
+  'domain_settings',
   'user_revisions',
+  'webauthn_credentials',
   'folders',
   'ciphers',
   'attachments',
@@ -35,7 +49,9 @@ export interface BackupImportResultBody {
   imported: {
     config: number;
     users: number;
+    domainSettings: number;
     userRevisions: number;
+    webauthnCredentials: number;
     folders: number;
     ciphers: number;
     attachments: number;
@@ -155,6 +171,8 @@ function buildResetImportTargetStatements(db: D1Database): D1PreparedStatement[]
     'DELETE FROM attachments',
     'DELETE FROM ciphers',
     'DELETE FROM folders',
+    'DELETE FROM webauthn_credentials',
+    'DELETE FROM domain_settings',
     'DELETE FROM user_revisions',
     'DELETE FROM users',
     'DELETE FROM config',
@@ -276,7 +294,9 @@ async function importPreparedBackupRows(db: D1Database, payload: BackupPayload['
       ...row,
       verify_devices: row.verify_devices ?? 1,
     })),
+    domain_settings: cloneRows(payload.domain_settings || []),
     user_revisions: cloneRows(payload.user_revisions || []),
+    webauthn_credentials: cloneRows(payload.webauthn_credentials || []),
     folders: cloneRows(payload.folders || []),
     ciphers: cloneRows(payload.ciphers || []).map((row) => ({
       ...row,
@@ -605,6 +625,27 @@ async function importBackupRows(db: D1Database, payload: BackupPayload['db'], us
   );
   await runInsertBatch(
     db,
+    tableName('domain_settings'),
+    buildInsertStatements(
+      db,
+      tableName('domain_settings'),
+      ['user_id', 'equivalent_domains', 'custom_equivalent_domains', 'excluded_global_equivalent_domains', 'updated_at'],
+      payload.domain_settings || [],
+      true
+    )
+  );
+  await runInsertBatch(
+    db,
+    tableName('webauthn_credentials'),
+    buildInsertStatements(
+      db,
+      tableName('webauthn_credentials'),
+      ['id', 'user_id', 'name', 'public_key', 'credential_id', 'counter', 'type', 'aa_guid', 'transports', 'encrypted_user_key', 'encrypted_public_key', 'encrypted_private_key', 'supports_prf', 'created_at', 'updated_at'],
+      payload.webauthn_credentials || []
+    )
+  );
+  await runInsertBatch(
+    db,
     tableName('folders'),
     buildInsertStatements(db, tableName('folders'), ['id', 'user_id', 'name', 'created_at', 'updated_at'], payload.folders || [])
   );
@@ -669,7 +710,9 @@ export async function importBackupArchiveBytes(
     await validateShadowTableCounts(env.DB, {
       config: (db.config || []).length,
       users: (db.users || []).length,
+      domain_settings: (db.domain_settings || []).length,
       user_revisions: (db.user_revisions || []).length,
+      webauthn_credentials: (db.webauthn_credentials || []).length,
       folders: (db.folders || []).length,
       ciphers: (db.ciphers || []).length,
       attachments: (db.attachments || []).length,
@@ -690,7 +733,9 @@ export async function importBackupArchiveBytes(
     await validateShadowTableCounts(env.DB, {
       config: (db.config || []).length,
       users: (db.users || []).length,
+      domain_settings: (db.domain_settings || []).length,
       user_revisions: (db.user_revisions || []).length,
+      webauthn_credentials: (db.webauthn_credentials || []).length,
       folders: (db.folders || []).length,
       ciphers: (db.ciphers || []).length,
       attachments: restored.restoredAttachments.length,
@@ -729,7 +774,9 @@ export async function importBackupArchiveBytes(
         imported: {
           config: (db.config || []).length,
           users: (db.users || []).length,
+          domainSettings: (db.domain_settings || []).length,
           userRevisions: (db.user_revisions || []).length,
+          webauthnCredentials: (db.webauthn_credentials || []).length,
           folders: (db.folders || []).length,
           ciphers: (db.ciphers || []).length,
           attachments: restored.restoredAttachments.length,
@@ -804,7 +851,9 @@ export async function importRemoteBackupArchiveBytes(
     await validateShadowTableCounts(env.DB, {
       config: (db.config || []).length,
       users: (db.users || []).length,
+      domain_settings: (db.domain_settings || []).length,
       user_revisions: (db.user_revisions || []).length,
+      webauthn_credentials: (db.webauthn_credentials || []).length,
       folders: (db.folders || []).length,
       ciphers: (db.ciphers || []).length,
       attachments: (db.attachments || []).length,
@@ -825,7 +874,9 @@ export async function importRemoteBackupArchiveBytes(
     await validateShadowTableCounts(env.DB, {
       config: (db.config || []).length,
       users: (db.users || []).length,
+      domain_settings: (db.domain_settings || []).length,
       user_revisions: (db.user_revisions || []).length,
+      webauthn_credentials: (db.webauthn_credentials || []).length,
       folders: (db.folders || []).length,
       ciphers: (db.ciphers || []).length,
       attachments: restored.restoredAttachments.length,
@@ -870,7 +921,9 @@ export async function importRemoteBackupArchiveBytes(
         imported: {
           config: (db.config || []).length,
           users: (db.users || []).length,
+          domainSettings: (db.domain_settings || []).length,
           userRevisions: (db.user_revisions || []).length,
+          webauthnCredentials: (db.webauthn_credentials || []).length,
           folders: (db.folders || []).length,
           ciphers: (db.ciphers || []).length,
           attachments: restored.restoredAttachments.length,

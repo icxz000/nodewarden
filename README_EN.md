@@ -1,16 +1,28 @@
 <p align="center">
-  <img src="./NodeWarden.png" alt="NodeWarden Logo" />
+  <img src="./NodeWarden.svg" alt="NodeWarden Logo" />
 </p>
 
 <p align="center">
-  A third-party Bitwarden-compatible server running on Cloudflare Workers.
+  Bitwarden-compatible server running on Cloudflare Workers
+
 </p>
-[![Powered by Cloudflare](https://img.shields.io/badge/Powered%20by-Cloudflare-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
-[![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-2ea44f)](./LICENSE)
-[![Latest Release](https://img.shields.io/github/v/release/shuaiplus/NodeWarden?display_name=tag)](https://github.com/shuaiplus/NodeWarden/releases/latest)
-[![Sync Upstream](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml/badge.svg)](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml)
-[Release Notes](./RELEASE_NOTES.md) | [Report an Issue](https://github.com/shuaiplus/NodeWarden/issues/new/choose) | [Latest Release](https://github.com/shuaiplus/NodeWarden/releases/latest)
-中文说明：[`README.md`](./README.md)
+
+<p align="center">
+  <a href="https://workers.cloudflare.com/"><img src="https://img.shields.io/badge/Powered%20by-Cloudflare-F38020?logo=cloudflare&logoColor=white" alt="Powered by Cloudflare" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-LGPL--3.0-2ea44f" alt="License: LGPL-3.0" /></a>
+  <a href="https://github.com/shuaiplus/NodeWarden/releases/latest"><img src="https://img.shields.io/github/v/release/shuaiplus/NodeWarden?display_name=tag" alt="Latest Release" /></a>
+  <a href="https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml"><img src="https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml/badge.svg" alt="Sync Upstream" /></a>
+</p>
+
+<p align="center">
+  <a href="https://t.me/NodeWarden_News">Telegram Channel</a> |
+  <a href="https://t.me/NodeWarden_Official">Telegram Group</a>
+</p>
+
+<p align="center">
+  <a href="./README.md">中文说明</a> |
+  <a href="./CONTRIBUTING.md">Contributing</a>
+</p>
 
 > **Disclaimer**
 >
@@ -25,16 +37,19 @@
 | Capability | Bitwarden | NodeWarden | Notes |
 |---|---|---|---|
 | Web Vault | ✅ | ✅ | **Original Web Vault interface** |
+| **PWA Support** | ⚠️ Basic | ✅ | **Installable, offline-capable, app shortcuts** |
+| **Web Vault Offline Access** | ❌ | ✅ | **Web client supports offline vault viewing** |
+| **Passkey Login** | ✅ | ✅ | **WebAuthn/FIDO2 passwordless login** |
 | Full sync `/api/sync` | ✅ | ✅ | Compatibility optimized for official clients |
 | Attachment upload / download | ✅ | ✅ | Cloudflare R2 or KV |
 | Send | ✅ | ✅ | Supports both text and file Sends |
 | Import / Export | ✅ | ✅ | Supports Bitwarden JSON / CSV / **ZIP import with attachments** |
-| **Cloud Backup Center** | ❌ | ✅ | **Scheduled backup to WebDAV / E3** |
+| **Cloud Backup Center** | ❌ | ✅ | **WebDAV / S3 scheduled backup (OneDrive/Google Drive etc.)** |
 | Password hint (web) | ⚠️ Limited | ✅ | **No email required** |
 | TOTP / Steam TOTP | ✅ | ✅ | Includes `steam://` support |
 | Multi-user | ✅ | ✅ | Invite-based registration |
 | Organizations / Collections / Member roles | ✅ | ❌ | Not implemented |
-| Login 2FA | ✅ | ⚠️ Partial | Currently only user-level TOTP |
+| Login 2FA | ✅ | ⚠️ Partial | TOTP and Passkey (as second factor) |
 | SSO / SCIM / Enterprise directory | ✅ | ❌ | Not implemented |
 
 ---
@@ -87,17 +102,34 @@ npm run dev:kv
 
 ---
 
-## Cloud Backup Notes
+## Key Features
 
-- Remote backup supports **WebDAV** and **E3**
+### PWA Progressive Web App
+
+- ✅ **Install to desktop** - Runs like a native app
+- ✅ **Offline usage** - Service Worker caching, view passwords offline
+- ✅ **App shortcuts** - Quick launch vault, TOTP codes
+- ✅ **Background decryption** - Web Worker handles decryption without blocking UI
+
+### Passkey Passwordless Login
+
+- ✅ **WebAuthn/FIDO2 support** - Login with fingerprint, Face ID, etc.
+- ✅ **PRF key unlock** - Passkey can unlock vault directly
+- ✅ **Official client compatibility** - Chromium browser extension supports Passkey login
+- ✅ **Multi-device sync** - Supports iCloud, Google Password Manager, etc.
+
+### Cloud Backup Notes
+
+- Remote backup supports **WebDAV** and **S3**
+- Supports **OneDrive** (via Koofr), **Google Drive** (via Koofr), **Cloudflare R2**, **Backblaze B2**, etc.
 - When `Include attachments` is enabled:
-- the ZIP still contains only `db.json` and `manifest.json`
-- actual attachment files are stored separately under `attachments/`
-- later backups reuse existing attachments by stable blob name instead of re-uploading everything every time
+  - the ZIP still contains only `db.json` and `manifest.json`
+  - actual attachment files are stored separately under `attachments/`
+  - later backups reuse existing attachments by stable blob name instead of re-uploading everything every time
 - During remote restore:
-- required attachment files are loaded from `attachments/` on demand
-- missing attachments are skipped safely
-- skipped attachments do not leave broken rows in the restored database
+  - required attachment files are loaded from `attachments/` on demand
+  - missing attachments are skipped safely
+  - skipped attachments do not leave broken rows in the restored database
 
 ---
 

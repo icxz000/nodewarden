@@ -4,23 +4,41 @@ import {
   deleteAllAuthorizedDevices,
   deleteAuthorizedDevice,
   deriveLoginHash,
+  deleteAccountPasskey as deleteAccountPasskeyApi,
+  enableAccountPasskeyDirectUnlock as enableAccountPasskeyDirectUnlockApi,
   getCurrentDeviceIdentifier,
+  getApiKey,
+  getAccountPasskeyAttestationOptions,
+  getAccountPasskeyUpdateAssertionOptions,
   getTotpRecoveryCode,
+  listAccountPasskeys,
+  rotateApiKey,
   revokeAuthorizedDeviceTrust,
   revokeAllAuthorizedDeviceTrust,
+  saveAccountPasskey,
   setTotp,
+  trustAuthorizedDevicePermanently,
+  updateAuthorizedDeviceName,
   updateProfile,
 } from '@/lib/api/auth';
+import {
+  AccountPasskeyPrfUnavailableError,
+  assertAccountPasskey,
+  buildAccountPasskeyPrfKeySet,
+  buildAccountPasskeyPrfKeySetFromPrfKey,
+  createAccountPasskeyCredential,
+} from '@/lib/account-passkeys';
 import { t } from '@/lib/i18n';
 import type { AppConfirmState } from '@/components/AppGlobalOverlays';
 import type { AuthedFetch } from '@/lib/api/shared';
-import type { AuthorizedDevice, Profile } from '@/lib/types';
+import type { AccountPasskeyCredential, AuthorizedDevice, Profile, SessionState } from '@/lib/types';
 
 type Notify = (type: 'success' | 'error' | 'warning', text: string) => void;
 
 interface UseAccountSecurityActionsOptions {
   authedFetch: AuthedFetch;
   profile: Profile | null;
+  session: SessionState | null;
   defaultKdfIterations: number;
   disableTotpPassword: string;
   clearDisableTotpDialog: () => void;
@@ -36,6 +54,7 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
   const {
     authedFetch,
     profile,
+    session,
     defaultKdfIterations,
     disableTotpPassword,
     clearDisableTotpDialog,
@@ -48,7 +67,29 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
   } = options;
 
   return useMemo(
-    () => ({
+    () => {
+      function confirmSaveLoginOnlyAccountPasskey(): Promise<boolean> {
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = (shouldSave: boolean) => {
+            if (settled) return;
+            settled = true;
+            onSetConfirm(null);
+            resolve(shouldSave);
+          };
+          onSetConfirm({
+            title: t('txt_account_passkey_direct_unlock_unavailable_title'),
+            message: t('txt_account_passkey_direct_unlock_unavailable_message'),
+            confirmText: t('txt_save_login_only_passkey'),
+            cancelText: t('txt_do_not_save'),
+            showIcon: true,
+            onConfirm: () => finish(true),
+            onCancel: () => finish(false),
+          });
+        });
+      }
+
+      return ({
       async changePassword(currentPassword: string, nextPassword: string, nextPassword2: string) {
         if (!profile) return;
         if (!currentPassword || !nextPassword) {
@@ -128,7 +169,6 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
         try {
           const derived = await deriveLoginHash(profile.email, disableTotpPassword, defaultKdfIterations);
           await setTotp(authedFetch, { enabled: false, masterPasswordHash: derived.hash });
-          if (profile.id) localStorage.removeItem(`nodewarden.totp.secret.${profile.id}`);
           clearDisableTotpDialog();
           await refetchTotpStatus();
           onNotify('success', t('txt_totp_disabled'));
@@ -147,8 +187,116 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
         return code;
       },
 
+      async getApiKey(masterPassword: string): Promise<string> {
+        if (!profile) throw new Error(t('txt_profile_unavailable'));
+        const normalized = String(masterPassword || '');
+        if (!normalized) throw new Error(t('txt_master_password_is_required'));
+        const derived = await deriveLoginHash(profile.email, normalized, defaultKdfIterations);
+        const key = await getApiKey(authedFetch, derived.hash);
+        if (!key) throw new Error(t('txt_api_key_is_empty'));
+        return key;
+      },
+
+      async rotateApiKey(masterPassword: string): Promise<string> {
+        if (!profile) throw new Error(t('txt_profile_unavailable'));
+        const normalized = String(masterPassword || '');
+        if (!normalized) throw new Error(t('txt_master_password_is_required'));
+        const derived = await deriveLoginHash(profile.email, normalized, defaultKdfIterations);
+        const key = await rotateApiKey(authedFetch, derived.hash);
+        if (!key) throw new Error(t('txt_api_key_is_empty'));
+        return key;
+      },
+
+      async listAccountPasskeys(): Promise<AccountPasskeyCredential[]> {
+        return listAccountPasskeys(authedFetch);
+      },
+
+      async createAccountPasskey(name: string, masterPassword: string, directUnlock: boolean): Promise<AccountPasskeyCredential | null> {
+        if (!profile) throw new Error(t('txt_profile_unavailable'));
+        const normalizedPassword = String(masterPassword || '');
+        if (!normalizedPassword) throw new Error(t('txt_master_password_is_required'));
+        const normalizedName = String(name || '').trim() || t('txt_account_passkey');
+        const derived = await deriveLoginHash(profile.email, normalizedPassword, defaultKdfIterations);
+        const options = await getAccountPasskeyAttestationOptions(authedFetch, derived.hash);
+        const pending = await createAccountPasskeyCredential(options);
+        let keySet = null;
+        let savedWithoutDirectUnlock = false;
+        if (directUnlock) {
+          if (!session?.symEncKey || !session?.symMacKey) throw new Error(t('txt_vault_key_unavailable'));
+          try {
+            keySet = await buildAccountPasskeyPrfKeySet(pending, {
+              symEncKey: session.symEncKey,
+              symMacKey: session.symMacKey,
+            });
+          } catch (error) {
+            if (!(error instanceof AccountPasskeyPrfUnavailableError)) throw error;
+            const shouldSaveLoginOnly = await confirmSaveLoginOnlyAccountPasskey();
+            if (!shouldSaveLoginOnly) {
+              onNotify('warning', t('txt_account_passkey_not_saved'));
+              return null;
+            }
+            savedWithoutDirectUnlock = true;
+          }
+        }
+        const credential = await saveAccountPasskey(authedFetch, {
+          name: normalizedName,
+          token: pending.token,
+          deviceResponse: pending.request,
+          supportsPrf: keySet ? true : savedWithoutDirectUnlock ? false : pending.supportsPrf,
+          keySet,
+        });
+        onNotify('success', savedWithoutDirectUnlock ? t('txt_account_passkey_saved_login_only') : t('txt_account_passkey_saved'));
+        return credential;
+      },
+
+      async enableAccountPasskeyDirectUnlock(id: string, masterPassword: string): Promise<void> {
+        if (!profile) throw new Error(t('txt_profile_unavailable'));
+        if (!session?.symEncKey || !session?.symMacKey) throw new Error(t('txt_vault_key_unavailable'));
+        if (!String(id || '').trim()) throw new Error(t('txt_account_passkey_not_found'));
+        const normalizedPassword = String(masterPassword || '');
+        if (!normalizedPassword) throw new Error(t('txt_master_password_is_required'));
+        const derived = await deriveLoginHash(profile.email, normalizedPassword, defaultKdfIterations);
+        const options = await getAccountPasskeyUpdateAssertionOptions(authedFetch, derived.hash, id);
+        const assertion = await assertAccountPasskey(options);
+        if (!assertion.prfKey) throw new Error(t('txt_account_passkey_prf_not_available'));
+        const keySet = await buildAccountPasskeyPrfKeySetFromPrfKey(assertion.prfKey, {
+          symEncKey: session.symEncKey,
+          symMacKey: session.symMacKey,
+        });
+        await enableAccountPasskeyDirectUnlockApi(authedFetch, {
+          token: assertion.token,
+          deviceResponse: assertion.deviceResponse,
+          keySet,
+        });
+        onNotify('success', t('txt_account_passkey_direct_unlock_enabled'));
+      },
+
+      async deleteAccountPasskey(id: string, masterPassword: string): Promise<void> {
+        if (!profile) throw new Error(t('txt_profile_unavailable'));
+        const normalizedPassword = String(masterPassword || '');
+        if (!normalizedPassword) throw new Error(t('txt_master_password_is_required'));
+        const derived = await deriveLoginHash(profile.email, normalizedPassword, defaultKdfIterations);
+        await deleteAccountPasskeyApi(authedFetch, id, derived.hash);
+        onNotify('success', t('txt_account_passkey_deleted'));
+      },
+
       async refreshAuthorizedDevices() {
         await refetchAuthorizedDevices();
+      },
+
+      async renameAuthorizedDevice(device: AuthorizedDevice, name: string) {
+        const normalized = String(name || '').trim();
+        if (!normalized) {
+          onNotify('error', t('txt_device_note_required'));
+          return;
+        }
+        try {
+          await updateAuthorizedDeviceName(authedFetch, device.identifier, normalized);
+          await refetchAuthorizedDevices();
+          onNotify('success', t('txt_device_note_updated'));
+        } catch (error) {
+          onNotify('error', error instanceof Error ? error.message : t('txt_update_device_note_failed'));
+        }
       },
 
       openRevokeDeviceTrust(device: AuthorizedDevice) {
@@ -159,9 +307,33 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
           onConfirm: () => {
             onSetConfirm(null);
             void (async () => {
-              await revokeAuthorizedDeviceTrust(authedFetch, device.identifier);
-              await refetchAuthorizedDevices();
-              onNotify('success', t('txt_device_authorization_revoked'));
+              try {
+                await revokeAuthorizedDeviceTrust(authedFetch, device.identifier);
+                await refetchAuthorizedDevices();
+                onNotify('success', t('txt_device_authorization_revoked'));
+              } catch (error) {
+                onNotify('error', error instanceof Error ? error.message : t('txt_revoke_device_trust_failed'));
+              }
+            })();
+          },
+        });
+      },
+
+      openTrustDevicePermanently(device: AuthorizedDevice) {
+        onSetConfirm({
+          title: t('txt_trust_device_permanently'),
+          message: t('txt_trust_device_permanently_for_name', { name: device.name }),
+          danger: false,
+          onConfirm: () => {
+            onSetConfirm(null);
+            void (async () => {
+              try {
+                await trustAuthorizedDevicePermanently(authedFetch, device.identifier);
+                await refetchAuthorizedDevices();
+                onNotify('success', t('txt_device_trusted_permanently'));
+              } catch (error) {
+                onNotify('error', error instanceof Error ? error.message : t('txt_trust_device_permanently_failed'));
+              }
             })();
           },
         });
@@ -175,14 +347,18 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
           onConfirm: () => {
             onSetConfirm(null);
             void (async () => {
-              await deleteAuthorizedDevice(authedFetch, device.identifier);
-              if (device.identifier === getCurrentDeviceIdentifier()) {
+              try {
+                await deleteAuthorizedDevice(authedFetch, device.identifier);
+                if (device.identifier === getCurrentDeviceIdentifier()) {
+                  onNotify('success', t('txt_device_removed'));
+                  onLogoutNow();
+                  return;
+                }
+                await refetchAuthorizedDevices();
                 onNotify('success', t('txt_device_removed'));
-                onLogoutNow();
-                return;
+              } catch (error) {
+                onNotify('error', error instanceof Error ? error.message : t('txt_remove_device_failed'));
               }
-              await refetchAuthorizedDevices();
-              onNotify('success', t('txt_device_removed'));
             })();
           },
         });
@@ -196,9 +372,13 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
           onConfirm: () => {
             onSetConfirm(null);
             void (async () => {
-              await revokeAllAuthorizedDeviceTrust(authedFetch);
-              await refetchAuthorizedDevices();
-              onNotify('success', t('txt_all_device_authorizations_revoked'));
+              try {
+                await revokeAllAuthorizedDeviceTrust(authedFetch);
+                await refetchAuthorizedDevices();
+                onNotify('success', t('txt_all_device_authorizations_revoked'));
+              } catch (error) {
+                onNotify('error', error instanceof Error ? error.message : t('txt_revoke_all_device_trust_failed'));
+              }
             })();
           },
         });
@@ -212,14 +392,19 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
           onConfirm: () => {
             onSetConfirm(null);
             void (async () => {
-              await deleteAllAuthorizedDevices(authedFetch);
-              onNotify('success', t('txt_all_devices_removed'));
-              onLogoutNow();
+              try {
+                await deleteAllAuthorizedDevices(authedFetch);
+                onNotify('success', t('txt_all_devices_removed'));
+                onLogoutNow();
+              } catch (error) {
+                onNotify('error', error instanceof Error ? error.message : t('txt_remove_all_devices_failed'));
+              }
             })();
           },
         });
       },
-    }),
+      });
+    },
     [
       authedFetch,
       clearDisableTotpDialog,
@@ -230,6 +415,8 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
       onProfileUpdated,
       onSetConfirm,
       profile,
+      session?.symEncKey,
+      session?.symMacKey,
       refetchAuthorizedDevices,
       refetchTotpStatus,
     ]
